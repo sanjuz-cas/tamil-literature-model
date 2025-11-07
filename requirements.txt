@@ -1,10 +1,7 @@
 numpy<2
-torch==2.2.0
-torch_xla==2.2.0
-torchvision==0.17.0
 transformers
 datasets
 accelerate
 peft
-optimum-tpu
 huggingface_hub
+sentencepiece
