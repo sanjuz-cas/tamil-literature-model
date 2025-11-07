@@ -29,14 +29,14 @@ def setup_tpu_training():
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model = AutoModelForMaskedLM.from_pretrained(MODEL_NAME)
 
-    fsdp_training_args = fsdp_v2.get_fsdp_training_args(model)
+    fsdp_training_args = fsdp_v2.get_fsdp_config()
     return model, tokenizer, fsdp_training_args
 
 
 def prepare_dataset(tokenizer):
     print("Loading and preparing dataset...")
-    dataset = load_dataset("thamizhi/thirukkural", split="train")
-    dataset = dataset.shuffle(seed=42).select(range(2000))
+    dataset = load_dataset("Selvakumarduraipandian/Thirukural", split="train")
+    dataset = dataset.shuffle(seed=42)
 
     def tokenize_function(examples):
         return tokenizer(examples["Kural"], padding="max_length", truncation=True)
@@ -61,7 +61,7 @@ def main():
         logging_steps=10,
         save_strategy="epoch",
         dataloader_drop_last=True,
-        **fsdp_args,  # <<< THIS IS THE OPTIMUM CODE
+        xla_fsdp_config=fsdp_args,  # <<< THIS IS THE OPTIMUM CODE
     )
 
     tokenized_data = prepare_dataset(tokenizer)
@@ -76,7 +76,7 @@ def main():
     print(f"--- Starting Fine-Tuning for {PROJECT_NAME} ---")
     print(f"Checkpoints will be saved to: {CHECKPOINT_DIR}")
 
-    trainer.train(resume_from_checkpoint=True)
+    trainer.train()
 
     print("--- Fine-Tuning Complete ---")
     print("Saving final model...")

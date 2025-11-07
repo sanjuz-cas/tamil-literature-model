@@ -1,7 +1,4 @@
 numpy<2
-transformers
 datasets
-accelerate
-peft
 huggingface_hub
 sentencepiece
