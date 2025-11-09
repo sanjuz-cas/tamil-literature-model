@@ -1,0 +1,20 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tamil-gemma-train
+spec:
+  parallelism: 62
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: trainer
+        image: us-central1-docker.pkg.dev/tpu-research-sanju/tamil-llm/gemma-2b:latest
+        env:
+          - name: WANDB_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: wandb-key
+                key: api-key
+          - name: CHECKPOINT_DIR
+            value: "gs://tpu-research-sanju-tamil-llm/checkpoints"
