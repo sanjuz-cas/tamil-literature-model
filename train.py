@@ -1,87 +1,89 @@
+import os
 import torch
-import torch_xla.core.xla_model as xm
-import torch_xla.distributed as xd
-import numpy as np
-from datasets import load_dataset
 from transformers import (
     AutoTokenizer,
-    AutoModelForMaskedLM,
-    TrainingArguments,
+    AutoModelForCausalLM,
     Trainer,
+    TrainingArguments,
     DataCollatorForLanguageModeling,
 )
-from optimum.tpu import fsdp_v2  # <<< WE ARE USING THIS AGAIN
-import os
+from datasets import load_dataset
+import evaluate
 
-# --- 1. (CRITICAL) SET YOUR BUCKET HERE ---
-MY_BUCKET_NAME = "gs://sanjay-trc-bucket-2025"
-PROJECT_NAME = "tamil-model"
-CHECKPOINT_DIR = os.path.join(MY_BUCKET_NAME, PROJECT_NAME, "checkpoints")
+# ============== CONFIG ==============
+MODEL_NAME = "google/gemma-2b"
+PROJECT_NAME = "tamil-gemma-2b"
+CHECKPOINT_DIR = os.environ.get("CHECKPOINT_DIR", "./checkpoints")
+WANDB_PROJECT = os.environ.get("WANDB_PROJECT", "tamil-llm")
+WANDB_API_KEY = os.environ.get("WANDB_API_KEY", "")
+# ====================================
 
-# --- 2. CHOOSE YOUR BASE MODEL ---
-MODEL_NAME = "xlm-roberta-base"
+if WANDB_API_KEY:
+    os.environ["WANDB_PROJECT"] = WANDB_PROJECT
+    os.environ["WANDB_API_KEY"] = WANDB_API_KEY
+
+perplexity_metric = evaluate.load("perplexity", module_type="metric")
 
 
-def setup_tpu_training():
-    print("Setting up FSDPv2 for TPU sharding...")
-    fsdp_v2.use_fsdp_v2()
-
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    model = AutoModelForMaskedLM.from_pretrained(MODEL_NAME)
-
-    fsdp_training_args = fsdp_v2.get_fsdp_config()
-    return model, tokenizer, fsdp_training_args
+def compute_metrics(eval_pred):
+    logits, labels = eval_pred
+    return perplexity_metric.compute(predictions=logits, model_id=MODEL_NAME)
 
 
 def prepare_dataset(tokenizer):
-    print("Loading and preparing dataset...")
-    dataset = load_dataset("Selvakumarduraipandian/Thirukural", split="train")
-    dataset = dataset.shuffle(seed=42)
+    dataset = load_dataset("thamizhi/thirukkural", split="train").shuffle(seed=42)
 
-    def tokenize_function(examples):
-        return tokenizer(examples["Kural"], padding="max_length", truncation=True)
+    def tokenize_fn(examples):
+        return tokenizer(examples["Kural"])
 
-    tokenized_datasets = dataset.map(
-        tokenize_function, batched=True, remove_columns=dataset.column_names
+    tokenized = dataset.map(
+        tokenize_fn, batched=True, remove_columns=dataset.column_names
     )
-    return tokenized_datasets
+    split = tokenized.train_test_split(test_size=0.1)
+    return split["train"], split["test"]
 
 
 def main():
-    model, tokenizer, fsdp_args = setup_tpu_training()
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
 
-    data_collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer, mlm=True, mlm_probability=0.15
-    )
+    if tokenizer.pad_token is None:
+        tokenizer.add_special_tokens({"pad_token": tokenizer.eos_token})
+        model.resize_token_embeddings(len(tokenizer))
 
-    training_args = TrainingArguments(
+    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    train_ds, eval_ds = prepare_dataset(tokenizer)
+
+    args = TrainingArguments(
         output_dir=CHECKPOINT_DIR,
-        per_device_train_batch_size=16,
-        num_train_epochs=3,
+        evaluation_strategy="epoch",
+        logging_strategy="steps",
         logging_steps=10,
+        report_to="wandb" if WANDB_API_KEY else "none",
+        num_train_epochs=1,
+        per_device_train_batch_size=4,
+        per_device_eval_batch_size=4,
         save_strategy="epoch",
+        save_total_limit=3,
         dataloader_drop_last=True,
-        xla_fsdp_config=fsdp_args,  # <<< THIS IS THE OPTIMUM CODE
+        fp16=True,
+        gradient_checkpointing=True,
+        resume_from_checkpoint=True if os.path.exists(CHECKPOINT_DIR) else None,
     )
-
-    tokenized_data = prepare_dataset(tokenizer)
 
     trainer = Trainer(
         model=model,
-        args=training_args,
-        train_dataset=tokenized_data,
+        args=args,
+        train_dataset=train_ds,
+        eval_dataset=eval_ds,
+        compute_metrics=compute_metrics,
         data_collator=data_collator,
+        tokenizer=tokenizer,
     )
 
-    print(f"--- Starting Fine-Tuning for {PROJECT_NAME} ---")
-    print(f"Checkpoints will be saved to: {CHECKPOINT_DIR}")
-
-    trainer.train()
-
-    print("--- Fine-Tuning Complete ---")
-    print("Saving final model...")
+    trainer.train(resume_from_checkpoint=os.path.exists(CHECKPOINT_DIR))
     trainer.save_model(os.path.join(CHECKPOINT_DIR, "final-model"))
-    print(f"All model checkpoints are safe in your GCS bucket!")
+    print("✅ Training complete. Model saved to", CHECKPOINT_DIR)
 
 
 if __name__ == "__main__":

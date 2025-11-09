@@ -1,0 +1,15 @@
+steps:
+  - name: "gcr.io/cloud-builders/docker"
+    args: [
+      "build",
+      "-t", "us-central1-docker.pkg.dev/$PROJECT_ID/tamil-llm/gemma-2b:$SHORT_SHA",
+      "."
+    ]
+  - name: "gcr.io/cloud-builders/docker"
+    args: [
+      "push",
+      "us-central1-docker.pkg.dev/$PROJECT_ID/tamil-llm/gemma-2b:$SHORT_SHA"
+    ]
+images:
+  - "us-central1-docker.pkg.dev/$PROJECT_ID/tamil-llm/gemma-2b:$SHORT_SHA"
+timeout: "1800s"
